@@ -5,7 +5,7 @@
 
 `default_nettype none
 
-module tt_um_example (
+module tt_aes_fsm (
     input  wire [7:0] ui_in,    // Dedicated inputs
     output wire [7:0] uo_out,   // Dedicated outputs
     input  wire [7:0] uio_in,   // IOs: Input path
@@ -16,41 +16,124 @@ module tt_um_example (
     input  wire       rst_n     // reset_n - low to reset
 );
 
-    // Pin assignments:
-  // ui_in[7:0]   = data_in[7:0]  (8-bit data input)
-  // uio_in[7:0]  = key_in[7:0]   (8-bit key input)
-  // uo_out[7:0]  = data_out[7:0] (8-bit encrypted output)
-  // uio_out[7:0] = status/debug  (bit 0 = ready, bits 3:0 = round_count)
-  
+  wire start;
   wire [7:0] data_in;
   wire [7:0] key_in;
   wire [7:0] data_out;
   wire ready;
-  wire [3:0] round_count;
-  wire [3:0] state;
+  
+  reg start_reg;
+  reg prev_rst_n;
+  
+  // Input assignments
+  assign data_in = ui_in; // ui_in[7:0] - data_in (8-bit data input)
+  assign key_in = uio_in; // uio_in[7:0] - key_in (8-bit key input)
+  
+  // Generate start pulse on rising edge of reset
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      prev_rst_n <= 1'b0;
+      start_reg <= 1'b0;
+    end else begin
+      prev_rst_n <= rst_n;
+      // Generate start pulse when coming out of reset
+      start_reg <= (!prev_rst_n && rst_n);
+    end
+  end
+  
+  assign start = start_reg;
+  
+  // Output assignments
+  assign uo_out = data_out;   // uo_out[7:0] - data_out (8-bit encrypted output)
+  assign uio_out = {7'b0, ready}; // uio_out[0] - ready signal
+  assign uio_oe = 8'b00000001;  // Only bit 0 is output (ready), rest are inputs
+  
+  // Internal registers
+  reg [3:0] state, next_state;
+  reg [3:0] round_count;
+  reg [7:0] state_reg, key_reg;
+  
+  localparam IDLE   = 3'd0,
+             LOAD   = 3'd1,
+             ROUND  = 3'd2,
+             DONE   = 3'd3;
+             
+  // Combinational logic for state transitions
+  always @(*) begin
+    next_state = state;
+    case (state)
+      IDLE:   if (start) next_state = LOAD;
+      LOAD:   next_state = ROUND;
+      ROUND:  if (round_count == 4'd9) next_state = DONE;
+      DONE:   next_state = IDLE;
+      default: next_state = IDLE;
+    endcase
+  end
+  
+  // Sequential state transition and round counter
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      state <= IDLE;
+      round_count <= 0;
+    end else begin
+      state <= next_state;
+      
+      // Round counter control based on state transitions
+      case (next_state)
+        LOAD: begin
+          round_count <= 0;  // Reset counter when entering LOAD
+        end
+        ROUND: begin
+          if (state == ROUND)
+            round_count <= round_count + 1;  // Increment in ROUND
+          else
+            round_count <= 0;  // First cycle in ROUND, start at 0
+        end
+        default: begin
+          round_count <= 0;  // Reset in all other states
+        end
+      endcase
+    end
+  end
+  
+  // AES-lite byte operation
+  reg [7:0] data_out_reg;
+  reg ready_reg;
+  
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      data_out_reg <= 8'b0;
+      ready_reg <= 1'b0;
+      state_reg <= 8'b0;
+      key_reg <= 8'b0;
+    end else begin
+      case (state)
+        IDLE: begin
+          ready_reg <= 1'b0;
+        end
+        LOAD: begin
+          state_reg <= data_in;
+          key_reg   <= key_in;
+          ready_reg <= 1'b0;
+        end
+        ROUND: begin
+          state_reg <= state_reg ^ key_reg ^ round_count;
+        end
+        DONE: begin
+          data_out_reg <= state_reg;
+          ready_reg <= 1'b1;
+        end
+        default: begin
+          ready_reg <= 1'b0;
+        end
+      endcase
+    end
+  end
+  
+  assign data_out = data_out_reg;
+  assign ready = ready_reg;
 
- // Input mapping
-  assign data_in = ui_in[7:0];    // Full 8-bit data
-  assign key_in = uio_in[7:0];    // Full 8-bit key
-  
-  // Output mapping
-  assign uo_out = data_out;       // 8-bit encrypted output
-  assign uio_out = {state, round_count};  // Debug: state and round counter
-  assign uio_oe = 8'b11111111;    // All bidirectional pins as outputs
-    
-   // Instantiate the AES-lite controller (auto-start on reset)
-  aes_lite_ctrl aes_lite_ctrl (
-    .clk(clk),
-    .rst_n(rst_n),
-    .data_in(data_in),
-    .key_in(key_in),
-    .data_out(data_out),
-    .ready(ready),
-    .round_count(round_count),
-    .state(state)
-  );
-  
   // List all unused inputs to prevent warnings
-  wire _unused = &{ena, ready, 1'b0};
+wire _unused = &{ena,uio_out[7:1], 1'b0};
 
 endmodule
