@@ -16,12 +16,41 @@ module tt_um_example (
     input  wire       rst_n     // reset_n - low to reset
 );
 
-  // All output pins must be assigned. If not used, assign to 0.
-  assign uo_out  = ui_in + uio_in;  // Example: ou_out is the sum of ui_in and uio_in
-  assign uio_out = 0;
-  assign uio_oe  = 0;
+    // Pin assignments:
+  // ui_in[7:0]   = data_in[7:0]  (8-bit data input)
+  // uio_in[7:0]  = key_in[7:0]   (8-bit key input)
+  // uo_out[7:0]  = data_out[7:0] (8-bit encrypted output)
+  // uio_out[7:0] = status/debug  (bit 0 = ready, bits 3:0 = round_count)
+  
+  wire [7:0] data_in;
+  wire [7:0] key_in;
+  wire [7:0] data_out;
+  wire ready;
+  wire [3:0] round_count;
+  wire [3:0] state;
 
+ // Input mapping
+  assign data_in = ui_in[7:0];    // Full 8-bit data
+  assign key_in = uio_in[7:0];    // Full 8-bit key
+  
+  // Output mapping
+  assign uo_out = data_out;       // 8-bit encrypted output
+  assign uio_out = {state, round_count};  // Debug: state and round counter
+  assign uio_oe = 8'b11111111;    // All bidirectional pins as outputs
+    
+   // Instantiate the AES-lite controller (auto-start on reset)
+  aes_lite_ctrl aes_lite_ctrl (
+    .clk(clk),
+    .rst_n(rst_n),
+    .data_in(data_in),
+    .key_in(key_in),
+    .data_out(data_out),
+    .ready(ready),
+    .round_count(round_count),
+    .state(state)
+  );
+  
   // List all unused inputs to prevent warnings
-  wire _unused = &{ena, clk, rst_n, 1'b0};
+  wire _unused = &{ena, ready, 1'b0};
 
 endmodule
